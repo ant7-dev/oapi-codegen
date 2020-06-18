@@ -15,6 +15,8 @@ type Schema struct {
 	GoType  string // The Go type needed to represent the schema
 	RefType string // If the type has a type name, this is set
 
+	EnumValues []string // Enum values
+
 	Properties               []Property       // For an object, the fields with names
 	HasAdditionalProperties  bool             // Whether we support additional properties
 	AdditionalPropertiesType *Schema          // And if we do, their type
@@ -61,6 +63,7 @@ type Property struct {
 	JsonFieldName string
 	Schema        Schema
 	Required      bool
+	Nullable      bool
 }
 
 func (p Property) GoFieldName() string {
@@ -69,7 +72,7 @@ func (p Property) GoFieldName() string {
 
 func (p Property) GoTypeDef() string {
 	typeDef := p.Schema.TypeDecl()
-	if !p.Schema.SkipOptionalPointer && !p.Required {
+	if !p.Schema.SkipOptionalPointer && (!p.Required || p.Nullable) {
 		typeDef = "*" + typeDef
 	}
 	return typeDef
@@ -201,6 +204,7 @@ func GenerateGoSchema(sref *openapi3.SchemaRef, path []string) (Schema, error) {
 					Schema:        pSchema,
 					Required:      required,
 					Description:   description,
+					Nullable:      p.Value.Nullable,
 				}
 				outSchema.Properties = append(outSchema.Properties, prop)
 			}
@@ -259,6 +263,9 @@ func GenerateGoSchema(sref *openapi3.SchemaRef, path []string) (Schema, error) {
 			}
 			outSchema.GoType = "bool"
 		case "string":
+			for _, enumValue := range schema.Enum {
+				outSchema.EnumValues = append(outSchema.EnumValues, enumValue.(string))
+			}
 			// Special case string formats here.
 			switch f {
 			case "byte":
@@ -329,9 +336,9 @@ func GenFieldsFromProperties(props []Property) []string {
 		field += fmt.Sprintf("    %s %s", p.GoFieldName(), p.GoTypeDef())
 		validationTags := ""
 		validationPattern := ""
-		omitEmpty := ""
-		if p.Required{
-			omitEmpty = ",omitempty"
+		omitEmpty := ",omitempty"
+		if p.Required || p.Nullable{
+			omitEmpty = ""
 		}
 		if p.Schema.ValidationPattern != ""{
 			validationPattern = fmt.Sprintf(" pattern:\"%s\"", base64.StdEncoding.EncodeToString([]byte(p.Schema.ValidationPattern)))
