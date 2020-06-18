@@ -1,7 +1,9 @@
 package codegen
 
 import (
+	"encoding/base64"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/getkin/kin-openapi/openapi3"
@@ -19,6 +21,8 @@ type Schema struct {
 	AdditionalTypes          []TypeDefinition // We may need to generate auxiliary helper types, stored here
 
 	SkipOptionalPointer bool // Some types don't need a * in front when they're optional
+	ValidationTags []string //holds validation tags
+	ValidationPattern string //holds a regex pattern, if it defined
 }
 
 func (s Schema) IsRef() bool {
@@ -166,6 +170,12 @@ func GenerateGoSchema(sref *openapi3.SchemaRef, path []string) (Schema, error) {
 
 				required := StringInArray(pName, schema.Required)
 
+				//append validation tags
+				pSchema.ValidationTags = GenerateValidationTags(p.Value,required)
+				if p.Value.Pattern != ""{
+					pSchema.ValidationPattern = p.Value.Pattern
+				}
+
 				if pSchema.HasAdditionalProperties && pSchema.RefType == "" {
 					// If we have fields present which have additional properties,
 					// but are not a pre-defined type, we need to define a type
@@ -271,6 +281,24 @@ func GenerateGoSchema(sref *openapi3.SchemaRef, path []string) (Schema, error) {
 	return outSchema, nil
 }
 
+//add validation tags that can be processed by the go validator https://github.com/go-playground/validator
+func GenerateValidationTags(schema *openapi3.Schema, required bool) []string {
+	var validationTags []string
+	if len(schema.Format) > 1{
+		validationTags = append(validationTags,schema.Format)
+	}
+	if schema.MinLength > 0{
+		validationTags = append(validationTags, "min="+strconv.FormatUint(schema.MinLength,10))
+	}
+	if schema.MaxLength != nil && *schema.MaxLength > 0{
+		validationTags = append(validationTags, "max="+strconv.FormatUint(*schema.MaxLength,10))
+	}
+	if required{
+		validationTags = append(validationTags,"required")
+	}
+	return validationTags
+}
+
 // This describes a Schema, a type definition.
 type SchemaDescriptor struct {
 	Fields                   []FieldDescriptor
@@ -299,11 +327,20 @@ func GenFieldsFromProperties(props []Property) []string {
 			field += fmt.Sprintf("\n%s\n", StringToGoComment(p.Description))
 		}
 		field += fmt.Sprintf("    %s %s", p.GoFieldName(), p.GoTypeDef())
-		if p.Required {
-			field += fmt.Sprintf(" `json:\"%s\"`", p.JsonFieldName)
-		} else {
-			field += fmt.Sprintf(" `json:\"%s,omitempty\"`", p.JsonFieldName)
+		validationTags := ""
+		validationPattern := ""
+		omitEmpty := ""
+		if p.Required{
+			omitEmpty = ",omitempty"
 		}
+		if p.Schema.ValidationPattern != ""{
+			validationPattern = fmt.Sprintf(" pattern:\"%s\"", base64.StdEncoding.EncodeToString([]byte(p.Schema.ValidationPattern)))
+			p.Schema.ValidationTags = append(p.Schema.ValidationTags,"patternbase64")
+		}
+		if p.Schema.ValidationTags != nil{
+			validationTags = fmt.Sprintf(" validate:\"%s\"", strings.Join(p.Schema.ValidationTags,","))
+		}
+		field += fmt.Sprintf(" `json:\"%s%s\"%s%s`", p.JsonFieldName,omitEmpty,validationTags,validationPattern)
 		fields = append(fields, field)
 	}
 	return fields
