@@ -17,14 +17,13 @@ package middleware
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
-	"net/http"
-	"strings"
-
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/getkin/kin-openapi/openapi3filter"
 	"github.com/labstack/echo/v4"
 	echomiddleware "github.com/labstack/echo/v4/middleware"
+	"io/ioutil"
+	"net/http"
+	"strings"
 )
 
 const EchoContextKey = "oapi-codegen/echo-context"
@@ -80,6 +79,87 @@ func OapiRequestValidatorWithOptions(swagger *openapi3.Swagger, options *Options
 			return next(c)
 		}
 	}
+}
+
+// Create a validator from a swagger object, with validation options
+func OapiRequestValidatorWithOptionsHttpHandler(swagger *openapi3.Swagger, options *Options, next http.Handler, errorHandler func(err error)http.Handler) http.Handler {
+	if errorHandler == nil{
+		errorHandler = DefaultValidationErrorHandler
+	}
+	router := openapi3filter.NewRouter().WithSwagger(swagger)
+	fn := func(w http.ResponseWriter, r *http.Request) {
+		err := ValidateHTTPRequest(r, router, options)
+		if err != nil {
+			errorHandler(err).ServeHTTP(w,r)
+		}
+		next.ServeHTTP(w,r)
+	}
+	return http.HandlerFunc(fn)
+
+}
+
+func DefaultValidationErrorHandler(err error) http.Handler{
+	switch e := err.(type) {
+	case *openapi3filter.RequestError:
+		// We've got a bad request
+		fn := func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(e.Error()))
+		}
+		return http.HandlerFunc(fn)
+	case *openapi3filter.SecurityRequirementsError:
+		fn := func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+			w.Write([]byte(e.Error()))
+		}
+		return http.HandlerFunc(fn)
+	default:
+		fn := func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(e.Error()))
+		}
+		return http.HandlerFunc(fn)
+	}
+}
+
+// This function is called from the middleware above and actually does the work
+// of validating a request.
+func ValidateHTTPRequest(r *http.Request, router *openapi3filter.Router, options *Options) error {
+
+	route, pathParams, err := router.FindRoute(r.Method, r.URL)
+
+	// We failed to find a matching route for the request.
+	if err != nil {
+		switch e := err.(type) {
+		case *openapi3filter.RouteError:
+			// We've got a bad request, the path requested doesn't match
+			// either server, or path, or something.
+			return echo.NewHTTPError(http.StatusBadRequest, e.Reason)
+		default:
+			// This should never happen today, but if our upstream code changes,
+			// we don't want to crash the server, so handle the unexpected error.
+			return echo.NewHTTPError(http.StatusInternalServerError,
+				fmt.Sprintf("error validating route: %s", err.Error()))
+		}
+	}
+
+	validationInput := &openapi3filter.RequestValidationInput{
+		Request:    r,
+		PathParams: pathParams,
+		Route:      route,
+	}
+
+	requestContext := r.Context()
+
+	if options != nil {
+		validationInput.Options = &options.Options
+		validationInput.ParamDecoder = options.ParamDecoder
+		requestContext = context.WithValue(requestContext, UserDataKey, options.UserData)
+	}
+
+	err = openapi3filter.ValidateRequest(requestContext, validationInput)
+	//for default http handler errors have to be handled by the error handler function
+	return err
 }
 
 // This function is called from the middleware above and actually does the work
