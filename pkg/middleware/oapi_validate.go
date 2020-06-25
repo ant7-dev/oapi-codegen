@@ -82,19 +82,22 @@ func OapiRequestValidatorWithOptions(swagger *openapi3.Swagger, options *Options
 }
 
 // Create a validator from a swagger object, with validation options
-func OapiRequestValidatorWithOptionsHttpHandler(swagger *openapi3.Swagger, options *Options, next http.Handler, errorHandler func(err error)http.Handler) http.Handler {
+//func(next http.Handler) http.Handler
+func OapiRequestValidatorWithOptionsHttpHandler(swagger *openapi3.Swagger, options *Options, errorHandler func(err error)http.Handler) func(next http.Handler) http.Handler {
 	if errorHandler == nil{
 		errorHandler = DefaultValidationErrorHandler
 	}
 	router := openapi3filter.NewRouter().WithSwagger(swagger)
-	fn := func(w http.ResponseWriter, r *http.Request) {
-		err := ValidateHTTPRequest(r, router, options)
-		if err != nil {
-			errorHandler(err).ServeHTTP(w,r)
+	return func(next http.Handler) http.Handler {
+		fn := func(w http.ResponseWriter, r *http.Request) {
+			err := ValidateHTTPRequest(r, router, options)
+			if err != nil {
+				errorHandler(err).ServeHTTP(w,r)
+			}
+			next.ServeHTTP(w,r)
 		}
-		next.ServeHTTP(w,r)
+		return http.HandlerFunc(fn)
 	}
-	return http.HandlerFunc(fn)
 
 }
 
